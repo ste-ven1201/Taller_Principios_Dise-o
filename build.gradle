@@ -1,0 +1,68 @@
+plugins {
+    id 'java'
+    id 'application'
+    // Plugin oficial de ZeroC: compila el .ice con slice2java antes de compilar el Java.
+    // Si su plantilla del curso usa otra versión del plugin, usen la de ustedes.
+    id 'com.zeroc.gradle.ice-builder.slice' version '1.5.2'
+}
+
+repositories {
+    mavenCentral()
+}
+
+dependencies {
+    implementation 'com.zeroc:ice:3.7.10'
+}
+
+slice {
+    java {
+        files = [file('src/main/slice/ApexStore.ice')]
+    }
+}
+
+java {
+    sourceCompatibility = JavaVersion.VERSION_11
+    targetCompatibility = JavaVersion.VERSION_11
+}
+
+tasks.withType(JavaCompile) {
+    options.encoding = 'UTF-8'
+}
+
+// IntelliJ suele ejecutar la tarea application:run (no runDemo).
+// Fuerza UTF-8 en todas las tareas JavaExec para que los acentos se vean bien en la consola.
+tasks.withType(JavaExec).configureEach {
+    systemProperty 'stdout.encoding', 'UTF-8'
+}
+
+application {
+    mainClass = 'apexstore.Demo'
+}
+
+// Demo: los 5 nodos en una sola JVM + todos los escenarios.
+tasks.register('runDemo', JavaExec) {
+    group = 'apexstore'
+    description = 'Levanta todos los nodos en una JVM y ejecuta los escenarios de la demo'
+    classpath = sourceSets.main.runtimeClasspath
+    mainClass = 'apexstore.Demo'
+    systemProperty 'stdout.encoding', 'UTF-8'
+}
+
+// Un proceso por nodo (abrir una terminal por cada tarea, en este orden).
+[
+    runBaseDatosPrimaria: ['apexstore.nodos.NodoBaseDatos',  'bd-primaria.cfg'],
+    runBaseDatosReplica : ['apexstore.nodos.NodoBaseDatos',  'bd-replica.cfg'],
+    runBalanceador      : ['apexstore.nodos.NodoBalanceador', 'balanceador.cfg'],
+    runPasarelas        : ['apexstore.nodos.NodoPasarelas',  'pasarelas.cfg'],
+    runBackend1         : ['apexstore.nodos.NodoBackend',    'backend1.cfg'],
+    runBackend2         : ['apexstore.nodos.NodoBackend',    'backend2.cfg'],
+    runCliente          : ['apexstore.cliente.ClienteApexStore', 'cliente.cfg']
+].each { nombre, datos ->
+    tasks.register(nombre, JavaExec) {
+        group = 'apexstore'
+        classpath = sourceSets.main.runtimeClasspath
+        mainClass = datos[0]
+        args = ["--Ice.Config=config/${datos[1]}"]
+        systemProperty 'stdout.encoding', 'UTF-8'
+    }
+}
