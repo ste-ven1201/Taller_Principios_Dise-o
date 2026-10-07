@@ -7,6 +7,7 @@ import apexstore.pasarelas.EstrategiaPSE;
 import apexstore.pasarelas.EstrategiaStripe;
 import apexstore.pasarelas.SimuladorPasarela;
 import com.zeroc.Ice.Communicator;
+import com.zeroc.Ice.EndpointSelectionType;
 import com.zeroc.Ice.ObjectAdapter;
 import com.zeroc.Ice.Properties;
 import com.zeroc.Ice.Util;
@@ -52,7 +53,9 @@ public final class NodoPasarelas {
             return t;
         });
         NotificacionPagoPrx notificador = NotificacionPagoPrx.uncheckedCast(
-                c.propertyToProxy("Pasarelas.Notificacion.Proxy")).ice_invocationTimeout(3000);
+                c.propertyToProxy("Pasarelas.Notificacion.Proxy"))
+                .ice_endpointSelection(EndpointSelectionType.Ordered).ice_connectionCached(false)
+                .ice_invocationTimeout(3000);
         long min = p.getPropertyAsIntWithDefault("Pasarelas.Banco.MinMs", 300);
         long max = p.getPropertyAsIntWithDefault("Pasarelas.Banco.MaxMs", 1500);
         double rechazo = Double.parseDouble(p.getPropertyWithDefault("Pasarelas.ProbRechazo", "0.05"));

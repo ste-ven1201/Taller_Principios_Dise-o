@@ -128,4 +128,9 @@ module contrato
         idempotent long ultimaSecuencia();
         idempotent SecuenciaLog obtenerDesde(long secuencia, int maximo);
     };
+
+    interface HeartbeatBalanceador
+    {
+        idempotent void heartbeat(string emisor);
+    };
 };

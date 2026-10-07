@@ -53,10 +53,17 @@ public class BalanceadorCarga implements GestionarCompras {
 
     private final List<Replica> replicas;
     private final AtomicInteger turno = new AtomicInteger();
+    private final RolBalanceador rol;
 
-    public BalanceadorCarga(List<Replica> replicas, ScheduledExecutorService planificador, long periodoHealthMs) {
+    public BalanceadorCarga(List<Replica> replicas, ScheduledExecutorService planificador, long periodoHealthMs,
+                            RolBalanceador rol) {
         this.replicas = replicas;
+        this.rol = rol;
         planificador.scheduleWithFixedDelay(this::revisarSalud, periodoHealthMs, periodoHealthMs, TimeUnit.MILLISECONDS);
+    }
+
+    public boolean esActivo() {
+        return rol.esActivo();
     }
 
     // ---------------------------------------------------------------- gestionarComprasHttp
@@ -64,13 +71,13 @@ public class BalanceadorCarga implements GestionarCompras {
     @Override
     public CompletionStage<RespuestaCompra> iniciarCompraAsync(SolicitudCompra solicitud, Current current)
             throws CompraException {
-        return conFailover(r -> r.servicio.iniciarCompraAsync(solicitud));
+        return rol.ejecutarCuandoActivo(() -> conFailover(r -> r.servicio.iniciarCompraAsync(solicitud)));
     }
 
     @Override
     public CompletionStage<RespuestaCompra> consultarOrdenAsync(String idOrden, Current current)
             throws CompraException {
-        return conFailover(r -> r.servicio.consultarOrdenAsync(idOrden));
+        return rol.ejecutarCuandoActivo(() -> conFailover(r -> r.servicio.consultarOrdenAsync(idOrden)));
     }
 
     // ---------------------------------------------------------------- notificarTransaccionExitosa
@@ -80,7 +87,8 @@ public class BalanceadorCarga implements GestionarCompras {
         return new NotificacionPago() {
             @Override
             public CompletionStage<Void> notificarTransaccionExitosaAsync(ResultadoPago resultado, Current current) {
-                return conFailover(r -> r.procesador.notificarTransaccionExitosaAsync(resultado));
+                return rol.ejecutarCuandoActivo(
+                        () -> conFailover(r -> r.procesador.notificarTransaccionExitosaAsync(resultado)));
             }
         };
     }

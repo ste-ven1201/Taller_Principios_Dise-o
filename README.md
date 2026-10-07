@@ -1,7 +1,6 @@
 # ApexStore: implementación Java + ICE (Punto 4)
 
-Implementa el diagrama de despliegue **corregido** del Punto 3. Las pasarelas de pago están
-**completamente simuladas**: ningún componente se conecta a servicios financieros reales.
+Implementa el diagrama de despliegue corregido del Punto 3. Las pasarelas de pago están completamente simuladas: ningún componente se conecta a servicios financieros reales.
 
 Las tres estrategias se sirven desde el Nodo 4 y el ProcesadorPagosContexto de cada backend las invoca
 remotamente. Las estrategias validan los datos específicos del medio y delegan en el proveedor simulado local.
@@ -40,8 +39,13 @@ config/          un .cfg por nodo (para correrlos en procesos separados)
 | `persistirTransaccionPostgres` | `Persistencia` | BD primaria (`persistencia`) | `ProcesadorPagosContexto` (único) |
 | `replicacion` | `Replicacion` | BD primaria (`replicacion`) | BD réplica (`SeguidorReplicacion`) |
 
-Cada componente con dos lollipops (balanceador, procesador) expone **dos objetos ICE** con identidades
+Cada componente con dos lollipops (balanceador, procesador) expone dos objetos ICE con identidades
 distintas, porque un servant de ICE solo puede implementar una interfaz Slice.
+
+El enlace `heartbeat` entre los balanceadores se implementa con `HeartbeatBalanceador`: el activo envía
+latidos al respaldo cada 300 ms. Si el lease de 1.200 ms vence, el respaldo se promueve y espera solicitudes
+que hayan llegado durante esa ventana. Cuando vuelven los latidos, se repliega a pasivo; los proxies del
+cliente y de las pasarelas vuelven a preferir el endpoint activo.
 
 Cambios de firma respecto al diagrama (necesarios para que el flujo asíncrono funcione):
 las operaciones de estrategia reciben `idOrden` como primer parámetro (para correlacionar el callback),
@@ -53,7 +57,7 @@ las operaciones de estrategia reciben `idOrden` como primer parámetro (para cor
 Requisitos: Java 11+ y acceso a Maven Central.
 
 ```
-gradle runDemo          # los 5 nodos en una JVM + escenarios (recomendado para la sustentación)
+gradle runDemo          # todos los nodos, incluidas las dos instancias de balanceador, en una JVM
 ```
 
 Un proceso por nodo (una terminal por tarea, en este orden):
@@ -62,6 +66,7 @@ Un proceso por nodo (una terminal por tarea, en este orden):
 gradle runBaseDatosPrimaria
 gradle runBaseDatosReplica
 gradle runBalanceador
+gradle runBalanceadorPasivo
 gradle runPasarelas
 gradle runBackend1
 gradle runBackend2
@@ -82,9 +87,10 @@ Para provocar fallos con procesos separados, editar `config/pasarelas.cfg`
 | 2. Orden repetida | Un solo cobro real aunque se envíe 3 veces (idempotencia por `idOrden`) | RAS-03 |
 | 3. PSE caída | El circuit breaker se abre; Stripe sigue funcionando; PSE se recupera (semiabierto → cerrado) | Dim. 3, mal uso 5 |
 | 3b. Cripto no responde | 4 compras se resuelven en paralelo en ~1,5 s sin bloquear hilos | Dim. 2 y 3 |
-| 4. Pico de 300 compras | Aceptación con P95 ≈ 220 ms y 300/300 confirmadas por callback | RAS-01, RAS-02 |
+| 4. Pico de 300 compras | Aceptación con P95 < 250 ms y 300/300 confirmadas por callback | RAS-01, RAS-02 |
 | 5. Cae la réplica R1 | El balanceador detecta la caída y todo sigue por R2 | Dim. 6, mal uso 5 |
-| 6. Cae la BD primaria | La réplica se promueve sola; no se pierden órdenes; durante la conmutación se rechaza sin cobrar | Dim. 3 y 5, RAS-03 |
+| 5b. Cae y vuelve el balanceador activo | El heartbeat promueve 10401 tras vencer el lease; al volver 10400, 10401 se repliega y el tráfico retorna al activo | Dim. 3 y 6 |
+| 6. Cae la BD primaria | La réplica se promueve sola; las órdenes ya replicadas sobreviven; durante la conmutación se rechaza sin cobrar | Dim. 3 y 5, RAS-03 |
 
 **Mal uso 4 (Cripto → BD):** en el código solo `ProcesadorPagosContexto` tiene el proxy de `Persistencia`.
 Las estrategias y las pasarelas no lo conocen: su único camino de vuelta es el callback.
@@ -108,10 +114,18 @@ Las estrategias y las pasarelas no lo conocen: su único camino de vuelta es el 
 - **Failover de BD:** el proxy lista primaria y réplica con selección ordenada; la réplica en espera rechaza
   escrituras hasta promoverse, así que nunca hay dos primarias activas. Si la primaria original vuelve sin
   intervención, habría que reintegrarla como réplica (no implementado).
+- **Replicación de BD asíncrona:** el acuse de escritura primaria no espera a que la réplica confirme la copia.
+  Por eso, si la primaria cae antes de replicar una escritura reciente, esa última orden puede faltar en la réplica.
+  El demo solo verifica supervivencia de órdenes que ya aparecen en ambas instancias; no promete cero pérdida.
 - **Ventana de conmutación:** durante ~1,5 s tras caer la primaria las compras nuevas se rechazan de forma segura
   (antes de cobrar). Se prefirió consistencia sobre disponibilidad en ese instante (RAS-03 sobre RAS-01).
-- **Las pasarelas siguen en un solo nodo** (decisión del Punto 3); el balanceador y el backend sí están replicados.
-- **Medición de latencia:** el P95 de la demo se mide con los 5 nodos en una sola JVM y loopback. Es indicativo
+- **Balanceadores activo/pasivo:** cliente y pasarelas usan un proxy ICE con selección ordenada: 10400 es el activo
+  preferido y 10401 el respaldo. El heartbeat y el lease implementan promoción y repliegue; ambos balanceadores
+  son procesos independientes y sin estado de órdenes. El respaldo debe estar iniciado para conmutar. No hay
+  consenso ni fencing: una partición de red podría hacer que ambos se consideren activos, así que esta demo no
+  sustituye una solución de alta disponibilidad de producción.
+- **Las pasarelas siguen simuladas y en un solo nodo**; el backend y los balanceadores sí están replicados.
+- **Medición de latencia:** el P95 de la demo se mide con todos los nodos en una sola JVM y loopback. Es indicativo
   del comportamiento asíncrono, no una prueba de carga formal de RAS-02.
 - El estado de la orden vive en la BD, no en la memoria de las réplicas: por eso el callback puede llegar a
   cualquier réplica y el balanceador puede reintentar una compra en la otra réplica sin riesgo de doble cobro.

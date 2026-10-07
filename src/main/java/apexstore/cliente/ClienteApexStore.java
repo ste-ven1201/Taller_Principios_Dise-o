@@ -8,6 +8,7 @@ import apexstore.contrato.MedioPago;
 import apexstore.contrato.RespuestaCompra;
 import apexstore.contrato.SolicitudCompra;
 import com.zeroc.Ice.Communicator;
+import com.zeroc.Ice.EndpointSelectionType;
 import com.zeroc.Ice.Util;
 
 import java.util.HashMap;
@@ -78,7 +79,8 @@ public class ClienteApexStore {
             if (prx == null) {
                 throw new IllegalStateException("Propiedad Cliente.Balanceador.Proxy inválida");
             }
-            ClienteApexStore cliente = new ClienteApexStore(prx.ice_invocationTimeout(10000));
+            ClienteApexStore cliente = new ClienteApexStore(prx.ice_endpointSelection(EndpointSelectionType.Ordered)
+                    .ice_connectionCached(false).ice_invocationTimeout(10000));
             SolicitudCompra[] compras = {
                 compraStripe("ORD-" + UUID.randomUUID().toString().substring(0, 6), "cliente-1", 120.50),
                 compraPSE("ORD-" + UUID.randomUUID().toString().substring(0, 6), "cliente-1", 35.00),

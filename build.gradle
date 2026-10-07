@@ -53,6 +53,7 @@ tasks.register('runDemo', JavaExec) {
     runBaseDatosPrimaria: ['apexstore.nodos.NodoBaseDatos',  'bd-primaria.cfg'],
     runBaseDatosReplica : ['apexstore.nodos.NodoBaseDatos',  'bd-replica.cfg'],
     runBalanceador      : ['apexstore.nodos.NodoBalanceador', 'balanceador.cfg'],
+    runBalanceadorPasivo: ['apexstore.nodos.NodoBalanceador', 'balanceador-pasivo.cfg'],
     runPasarelas        : ['apexstore.nodos.NodoPasarelas',  'pasarelas.cfg'],
     runBackend1         : ['apexstore.nodos.NodoBackend',    'backend1.cfg'],
     runBackend2         : ['apexstore.nodos.NodoBackend',    'backend2.cfg'],

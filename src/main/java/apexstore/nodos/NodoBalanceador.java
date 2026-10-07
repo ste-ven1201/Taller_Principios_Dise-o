@@ -4,7 +4,9 @@ import apexstore.comun.ComunicadorIce;
 import apexstore.balanceador.BalanceadorCarga;
 import apexstore.balanceador.BalanceadorCarga.Replica;
 import apexstore.comun.Bitacora;
+import apexstore.balanceador.RolBalanceador;
 import apexstore.contrato.GestionarComprasPrx;
+import apexstore.contrato.HeartbeatBalanceadorPrx;
 import apexstore.contrato.NotificacionPagoPrx;
 import com.zeroc.Ice.Communicator;
 import com.zeroc.Ice.ObjectAdapter;
@@ -36,6 +38,9 @@ public final class NodoBalanceador {
         int total = p.getPropertyAsIntWithDefault("Balanceador.Replicas", 2);
         int timeoutMs = p.getPropertyAsIntWithDefault("Balanceador.TimeoutMs", 8000);
         long healthMs = p.getPropertyAsIntWithDefault("Balanceador.HealthMs", 1000);
+        boolean primario = "activo".equalsIgnoreCase(p.getPropertyWithDefault("Balanceador.Rol", "activo"));
+        long heartbeatMs = p.getPropertyAsIntWithDefault("Balanceador.Heartbeat.IntervalMs", 300);
+        long leaseMs = p.getPropertyAsIntWithDefault("Balanceador.Heartbeat.LeaseMs", 1200);
 
         List<Replica> replicas = new ArrayList<>();
         for (int i = 1; i <= total; i++) {
@@ -51,13 +56,20 @@ public final class NodoBalanceador {
             t.setDaemon(true);
             return t;
         });
-        BalanceadorCarga balanceador = new BalanceadorCarga(replicas, planificador, healthMs);
+        RolBalanceador rol = new RolBalanceador(primario, leaseMs);
+        String peerEndpoint = p.getProperty("Balanceador.Peer.Endpoint");
+        HeartbeatBalanceadorPrx peer = peerEndpoint.isEmpty() ? null : HeartbeatBalanceadorPrx.uncheckedCast(
+                c.stringToProxy("heartbeatBalanceador:" + peerEndpoint)).ice_invocationTimeout((int) heartbeatMs);
+        BalanceadorCarga balanceador = new BalanceadorCarga(replicas, planificador, healthMs, rol);
 
         ObjectAdapter adaptador = c.createObjectAdapter("AdaptadorBalanceador");
         adaptador.add(balanceador, Util.stringToIdentity("balanceador"));
         adaptador.add(balanceador.lollipopNotificacion(), Util.stringToIdentity("notificacionBalanceador"));
+        adaptador.add(rol, Util.stringToIdentity("heartbeatBalanceador"));
         adaptador.activate();
-        Bitacora.info("Balanceador", "listo con " + total + " réplicas");
+        rol.iniciarHeartbeats(peer, planificador, heartbeatMs);
+        Bitacora.info("Balanceador", "listo en modo " + (primario ? "ACTIVO" : "PASIVO")
+                + " con " + total + " réplicas");
         return balanceador;
     }
 }

@@ -15,6 +15,7 @@ import apexstore.nodos.NodoBaseDatos;
 import apexstore.nodos.NodoPasarelas;
 import apexstore.pasarelas.SimuladorPasarela.Modo;
 import com.zeroc.Ice.Communicator;
+import com.zeroc.Ice.EndpointSelectionType;
 import com.zeroc.Ice.InitializationData;
 import com.zeroc.Ice.Util;
 
@@ -25,7 +26,7 @@ import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.atomic.AtomicInteger;
 
 /**
- * Levanta los 5 nodos del diagrama corregido en una sola JVM (cada uno con su Communicator y su puerto)
+ * Levanta los nodos del diagrama corregido en una sola JVM (cada uno con su Communicator y su puerto)
  * y recorre los escenarios que justifican el rediseño. Para correr los nodos en procesos separados
  * se usan las clases Nodo* con los archivos de la carpeta config/.
  */
@@ -48,13 +49,22 @@ public final class Demo {
         AlmacenTransacciones bdReplica = NodoBaseDatos.iniciar(cBdReplica);
 
         Communicator cBalanceador = comunicador("AdaptadorBalanceador.Endpoints", "tcp -h " + H + " -p 10400",
+                "Balanceador.Rol", "activo",
+                "Balanceador.Peer.Endpoint", "tcp -h " + H + " -p 10401",
+                "Balanceador.Heartbeat.IntervalMs", "300", "Balanceador.Heartbeat.LeaseMs", "1200",
                 "Balanceador.Replicas", "2",
                 "Balanceador.Replica.1.Endpoint", "tcp -h " + H + " -p 10301",
                 "Balanceador.Replica.2.Endpoint", "tcp -h " + H + " -p 10302");
-        BalanceadorCarga balanceador = NodoBalanceador.iniciar(cBalanceador);
+        BalanceadorCarga balanceadorActivo = NodoBalanceador.iniciar(cBalanceador);
+        Communicator cBalanceadorPasivo = comunicador("AdaptadorBalanceador.Endpoints", "tcp -h " + H + " -p 10401",
+                "Balanceador.Rol", "pasivo", "Balanceador.Heartbeat.LeaseMs", "1200",
+                "Balanceador.Replicas", "2",
+                "Balanceador.Replica.1.Endpoint", "tcp -h " + H + " -p 10301",
+                "Balanceador.Replica.2.Endpoint", "tcp -h " + H + " -p 10302");
+        BalanceadorCarga balanceadorPasivo = NodoBalanceador.iniciar(cBalanceadorPasivo);
 
         Communicator cPasarelas = comunicador("AdaptadorPasarelas.Endpoints", "tcp -h " + H + " -p 10201",
-                "Pasarelas.Notificacion.Proxy", "notificacionBalanceador:tcp -h " + H + " -p 10400",
+                "Pasarelas.Notificacion.Proxy", "notificacionBalanceador:tcp -h " + H + " -p 10400:tcp -h " + H + " -p 10401",
                 "Pasarelas.Banco.MinMs", "200", "Pasarelas.Banco.MaxMs", "600",
                 "Pasarelas.ProbRechazo", "0.0", "Pasarelas.LentaMs", "4000");
         NodoPasarelas.Simuladores pasarelas = NodoPasarelas.iniciar(cPasarelas);
@@ -72,9 +82,13 @@ public final class Demo {
 
         Communicator cCliente = comunicador();
         GestionarComprasPrx prx = GestionarComprasPrx.uncheckedCast(
-                cCliente.stringToProxy("balanceador:tcp -h " + H + " -p 10400")).ice_invocationTimeout(10000);
+                cCliente.stringToProxy("balanceador:tcp -h " + H + " -p 10400:tcp -h " + H + " -p 10401"))
+                .ice_endpointSelection(EndpointSelectionType.Ordered).ice_connectionCached(false)
+                .ice_invocationTimeout(10000);
         ClienteApexStore cliente = new ClienteApexStore(prx);
         Thread.sleep(1500);
+        verificar("el heartbeat mantiene al respaldo en modo pasivo", balanceadorActivo.esActivo()
+                && !balanceadorPasivo.esActivo());
 
         // ------------------------------------------------------------------ 1
         titulo("Escenario 1: los tres medios de pago (despacho + callback asíncrono)");
@@ -210,6 +224,39 @@ public final class Demo {
         System.out.printf("   6 compras con R1 caída -> %d confirmadas por R2%n", ok);
         verificar("el sistema sigue operando con una sola réplica", ok == 6);
 
+        titulo("Escenario 5b: cae el balanceador activo (entrada y callback por el pasivo)");
+        SolicitudCompra duranteFailover = ClienteApexStore.compraStripe(id(), "elena", 19.0);
+        RespuestaCompra acuseFailover = cliente.comprar(duranteFailover);
+        verificar("el activo aceptó la compra antes de caer", acuseFailover.estado == EstadoOrden.Pendiente);
+        cBalanceador.destroy();
+        RespuestaCompra callbackFailover = cliente.esperarResultado(duranteFailover.idOrden, 8000);
+        System.out.println("   callback de la compra en curso -> " + callbackFailover.estado);
+        verificar("el callback se entrega por el balanceador pasivo", callbackFailover.estado == EstadoOrden.Confirmada);
+        verificar("el respaldo se promovió al vencer el heartbeat", balanceadorPasivo.esActivo());
+        SolicitudCompra entradaPasiva = ClienteApexStore.compraStripe(id(), "elena", 21.0);
+        cliente.comprar(entradaPasiva);
+        RespuestaCompra finalPasiva = cliente.esperarResultado(entradaPasiva.idOrden, 8000);
+        System.out.println("   nueva compra con el activo caído -> " + finalPasiva.estado);
+        verificar("el balanceador pasivo recibe nuevas compras", finalPasiva.estado == EstadoOrden.Confirmada);
+        cBalanceador = comunicador("AdaptadorBalanceador.Endpoints", "tcp -h " + H + " -p 10400",
+                "Balanceador.Rol", "activo",
+                "Balanceador.Peer.Endpoint", "tcp -h " + H + " -p 10401",
+                "Balanceador.Heartbeat.IntervalMs", "300", "Balanceador.Heartbeat.LeaseMs", "1200",
+                "Balanceador.Replicas", "2",
+                "Balanceador.Replica.1.Endpoint", "tcp -h " + H + " -p 10301",
+                "Balanceador.Replica.2.Endpoint", "tcp -h " + H + " -p 10302");
+        balanceadorActivo = NodoBalanceador.iniciar(cBalanceador);
+        long limiteReincorporacion = System.currentTimeMillis() + 5000;
+        while (balanceadorPasivo.esActivo() && System.currentTimeMillis() < limiteReincorporacion) {
+            Thread.sleep(100);
+        }
+        verificar("el respaldo vuelve a PASIVO cuando reaparece el activo",
+                balanceadorActivo.esActivo() && !balanceadorPasivo.esActivo());
+        SolicitudCompra trasRecuperacion = ClienteApexStore.compraStripe(id(), "elena", 22.0);
+        cliente.comprar(trasRecuperacion);
+        RespuestaCompra finalRecuperacion = cliente.esperarResultado(trasRecuperacion.idOrden, 8000);
+        verificar("el activo recuperado vuelve a recibir compras", finalRecuperacion.estado == EstadoOrden.Confirmada);
+
         // ------------------------------------------------------------------ 6
         titulo("Escenario 6: cae la BD primaria (failover a la réplica)");
         System.out.println("   transacciones en primaria=" + bdPrimaria.totalTransacciones()
@@ -241,6 +288,7 @@ public final class Demo {
 
         titulo("Resumen");
         System.out.printf("   %d de %d verificaciones OK%n", exitosas, verificaciones);
+        cBalanceadorPasivo.destroy();
         System.exit(exitosas == verificaciones ? 0 : 1);
     }
 
